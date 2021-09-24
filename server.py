@@ -1,5 +1,6 @@
 #  coding: utf-8 
 import socketserver
+from pathlib import Path
 
 # Copyright 2013 Abram Hindle, Eddie Antonio Santos
 # 
@@ -27,12 +28,74 @@ import socketserver
 # try: curl -v -X GET http://127.0.0.1:8080/
 
 
+# mime-types enum
+EXT_CONTENT_TYPE = {
+    '.html': 'text/html',
+    '.css':  'text/css',
+    '.js': 'text/javascript',
+}
+
+
 class MyWebServer(socketserver.BaseRequestHandler):
     
     def handle(self):
         self.data = self.request.recv(1024).strip()
-        print ("Got a request of: %s\n" % self.data)
-        self.request.sendall(bytearray("OK",'utf-8'))
+        # print ("Got a request of: %s\n" % self.data)
+        self.site = Path('./www').resolve()  # site dir, only serve this dir
+        self.data = self.data.split()
+        if len(self.data) < 3:  # not valid http format
+            return self.send_response(400, 'Bad Request')
+
+        method = self.data[0].decode()  # decode bytes to str
+        if method != 'GET':  # only handle GET request
+            return self.send_response(405, '405 Method Not Allowed')
+
+        request_uri = self.data[1].decode()  # decode bytes to str
+        uri = Path(self.site / ('.' + request_uri)).resolve()
+        if not is_relative_to(uri, self.site) or not uri.exists():  # if uri not found
+            return self.send_response(404, 'Not Found')
+
+        if uri.is_dir() and request_uri[-1] != '/':  # redirect to endswith /
+            self.send_response(301, 'Move Permanently')  # 301
+            self.send_header('Location', request_uri+'/')
+            return
+        if uri.is_dir():  # if is dir, send dir/index.html
+            uri = uri/'index.html'
+
+        # send file with content-type
+        file_ct = EXT_CONTENT_TYPE.get(uri.suffix, 'application/octet-stream')
+        self.send_response(200, 'OK')
+        self.send_header('Content-Type', file_ct)
+        self.end_header()
+        # open file and send to http body
+        with open(str(uri), 'rb') as f:
+            self.send_body(f.read())
+
+    def send_body(self, _bytes):
+        # send http body
+        self.request.sendall(_bytes)
+
+    def send_response(self, code, message=None):
+        # send http response code message
+        self.request.sendall(bytearray("HTTP/1.1 {code} {message}\r\n".format(code=code, message=message), 'utf-8'))
+
+    def send_header(self, key, value):
+        # send http resonse headers
+        self.request.sendall(bytearray('{key}: {value}\r\n'.format(key=key, value=value), 'utf-8'))
+
+    def end_header(self):
+        # send http header end flag
+        self.request.sendall(bytearray('\r\n', 'utf-8'))
+
+
+# determine whether it is a subdirectory
+def is_relative_to(sub_path, parent_path):
+    try:
+        sub_path.relative_to(parent_path)
+        return True
+    except ValueError:
+        return False
+
 
 if __name__ == "__main__":
     HOST, PORT = "localhost", 8080
